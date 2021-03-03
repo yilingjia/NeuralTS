@@ -16,7 +16,7 @@ class Network(nn.Module):
         return self.fc2(self.activate(self.fc1(x)))
 
 
-class NeuralTS:
+class NeuralPHE:
     def __init__(self, dim, lamdba=1, nu=1, hidden=100, style="ts"):
         self.func = Network(dim, hidden_size=hidden).cuda()
         self.func1 = Network(dim, hidden_size=hidden).cuda()
@@ -33,32 +33,9 @@ class NeuralTS:
 
     def select(self, context):
         tensor = torch.from_numpy(context).float().cuda()
-        mu = self.func(tensor)
-
-        mu1 = self.func1(tensor)
-        g_list = []
-        sampled = []
-        ave_sigma = 0
-        ave_rew = 0
-        for fx in mu1:
-            self.func1.zero_grad()
-            fx.backward(retain_graph=True)
-            g = torch.cat([p.grad.flatten().detach() for p in self.func1.parameters()])
-            g_list.append(g)
-            sigma2 = self.lamdba * self.nu * g * g / self.U
-            sigma = torch.sqrt(torch.sum(sigma2))
-            if self.style == "ts":
-                sample_r = np.random.normal(loc=fx.item(), scale=sigma.item())
-            elif self.style == "ucb":
-                sample_r = fx.item() + sigma.item()
-            else:
-                raise RuntimeError("Exploration style not set")
-            sampled.append(sample_r)
-            ave_sigma += sigma.item()
-            ave_rew += sample_r
-        arm = np.argmax(sampled)
-        self.U += g_list[arm] * g_list[arm]
-        return arm, g_list[arm].norm().item(), ave_sigma, ave_rew
+        mu = self.func(tensor).data.cpu().numpy()
+        arm = np.argmax(mu)
+        return arm, [], [], []
 
     def train(self, context, reward):
         self.context_list.append(torch.from_numpy(context.reshape(1, -1)).float())
@@ -73,7 +50,7 @@ class NeuralTS:
             batch_loss = 0
             for idx in index:
                 c = self.context_list[idx]
-                r = self.reward[idx]
+                r = self.reward[idx] + np.random.normal(0, self.nu)
                 optimizer.zero_grad()
                 delta = self.func(c.cuda()) - r
                 loss = delta * delta

@@ -3,12 +3,13 @@ from data_multi import Bandit_multi
 from data_sanity import Bandit_sanity
 from learner_linear import LinearTS
 from learner_neural import NeuralTS
+from learner_linear_phe import LinearPHE
+from learner_neural_phe import NeuralPHE
 from learner_diag import NeuralTSDiag
 from learner_kernel import KernelTS
 from neural_boost import Boost
 from learner_diag_kernel import KernelTSDiag
 from learner_diag_linear import LinearTSDiag
-from learner_neural_phe import NeuralPHE
 import numpy as np
 import argparse
 import pickle
@@ -82,7 +83,7 @@ if __name__ == "__main__":
         type=float,
         default=0.001,
         metavar="l",
-        help="lambda for regularzation",
+        help="lambda for regularization",
     )
     parser.add_argument(
         "--hidden",
@@ -118,22 +119,19 @@ if __name__ == "__main__":
             """ Linear TS diag is to use a cuda network """
             l = LinearTSDiag(b.dim, args.lamdba, args.nu, args.style)
         elif args.inv == "full":
-            l = LinearTS(b.dim, args.lamdba, args.nu, args.style)
+            l = LinearPHE(b.dim, args.lamdba, args.nu, args.style)
         else:
             RuntimeError("Inverse method not exist")
         ts_info = "{}_linear_{:.3e}_{:.3e}_{}".format(
             args.style, args.lamdba, args.nu, args.inv
         )
     elif args.learner == "neural":
-        if args.style == "phe":
+        if args.inv == "diag":
+            l = NeuralTSDiag(b.dim, args.lamdba, args.nu, args.hidden, args.style)
+        elif args.inv == "full":
             l = NeuralPHE(b.dim, args.lamdba, args.nu, args.hidden, args.style)
         else:
-            if args.inv == "diag":
-                l = NeuralTSDiag(b.dim, args.lamdba, args.nu, args.hidden, args.style)
-            elif args.inv == "full":
-                l = NeuralTS(b.dim, args.lamdba, args.nu, args.hidden, args.style)
-            else:
-                RuntimeError("Inverse method not exist")
+            RuntimeError("Inverse method not exist")
         ts_info = "{}_neural_{:.3e}_{:.3e}_{}_{}".format(
             args.style, args.lamdba, args.nu, args.hidden, args.inv
         )
@@ -158,20 +156,15 @@ if __name__ == "__main__":
     regrets = []
     for t in range(min(args.size, b.size)):
         context, rwd = b.step()
-        arm_select, g_norm, ave_sigma, ave_rew = l.select(context)
-        # print(arm_select)
+        arm_select = l.select(context)
         r = rwd[arm_select]
         reg = np.max(rwd) - r
         loss = l.train(context[arm_select], r)
         regrets.append(reg)
         if t % 100 == 0:
-            print(
-                "{}: {:.3f}, {:.3e}".format(
-                    t,
-                    np.sum(regrets),
-                    loss,
-                )
-            )
+            print(t, np.sum(regrets), loss)
+        # if t % 100 == 0:
+        #     print('{}: {:.3f}, {:.3e}, {:.3e}, {:.3e}, {:.3e}'.format(t, np.sum(regrets), loss, nrm, sig, ave_rwd))
 
     filename = "{:.3f}_{}_{}_delay_{}_{}.pkl".format(
         np.sum(regrets), bandit_info, ts_info, args.delay, time.time() - t1
