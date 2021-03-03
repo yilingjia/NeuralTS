@@ -3,6 +3,8 @@ import scipy as sp
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from backpack import backpack, extend
+from backpack.extensions import BatchGrad
 
 
 class Network(nn.Module):
@@ -17,12 +19,11 @@ class Network(nn.Module):
 
 
 class NeuralPHE:
-    def __init__(self, dim, lamdba=1, nu=1, hidden=100, style="ts"):
-        self.func = Network(dim, hidden_size=hidden).cuda()
-        self.func1 = Network(dim, hidden_size=hidden).cuda()
-        self.func1.load_state_dict(self.func.state_dict())
-        self.context_list = []
-        self.reward = []
+    def __init__(self, dim, lamdba=1, nu=1, hidden=100, style="phe"):
+        self.func = extend(Network(dim, hidden_size=hidden).cuda())
+        self.context_list = None
+        self.len = 0
+        self.reward = None
         self.lamdba = lamdba
         self.total_param = sum(
             p.numel() for p in self.func.parameters() if p.requires_grad
@@ -30,36 +31,67 @@ class NeuralPHE:
         self.U = lamdba * torch.ones((self.total_param,)).cuda()
         self.nu = nu
         self.style = style
+        self.loss_func = nn.MSELoss()
 
     def select(self, context):
         tensor = torch.from_numpy(context).float().cuda()
-        mu = self.func(tensor).data.cpu().numpy()
-        arm = np.argmax(mu)
+        mu = self.func(tensor)
+        # sum_mu = torch.sum(mu)
+        # with backpack(BatchGrad()):
+        #     sum_mu.backward()
+        # g_list = torch.cat(
+        #     [
+        #         p.grad_batch.flatten(start_dim=1).detach()
+        #         for p in self.func.parameters()
+        #     ],
+        #     dim=1,
+        # )
+        # sigma = torch.sqrt(
+        #     torch.sum(self.lamdba * self.nu * g_list * g_list / self.U, dim=1)
+        # )
+        # if self.style == "ts":
+        #     sample_r = torch.normal(mu.view(-1), sigma.view(-1))
+        # elif self.style == "ucb":
+        #     sample_r = mu.view(-1) + sigma.view(-1)
+        arm = torch.argmax(mu)
+        # self.U += g_list[arm] * g_list[arm]
         return arm, [], [], []
 
     def train(self, context, reward):
-        self.context_list.append(torch.from_numpy(context.reshape(1, -1)).float())
-        self.reward.append(reward)
-        optimizer = optim.SGD(self.func.parameters(), lr=1e-2, weight_decay=self.lamdba)
-        length = len(self.reward)
-        index = np.arange(length)
-        np.random.shuffle(index)
-        cnt = 0
-        tot_loss = 0
-        while True:
-            batch_loss = 0
-            for idx in index:
-                c = self.context_list[idx]
-                r = self.reward[idx] + np.random.normal(0, self.nu)
-                optimizer.zero_grad()
-                delta = self.func(c.cuda()) - r
-                loss = delta * delta
-                loss.backward()
-                optimizer.step()
-                batch_loss += loss.item()
-                tot_loss += loss.item()
-                cnt += 1
-                if cnt >= 1000:
-                    return tot_loss / 1000
-            if batch_loss / length <= 1e-3:
-                return batch_loss / length
+        self.len += 1
+        optimizer = optim.SGD(
+            self.func.parameters(), lr=1e-2, weight_decay=self.lamdba / self.len
+        )
+        if self.context_list is None:
+            self.context_list = torch.from_numpy(context.reshape(1, -1)).to(
+                device="cuda", dtype=torch.float32
+            )
+            self.reward = torch.tensor([reward], device="cuda", dtype=torch.float32)
+        else:
+            self.context_list = torch.cat(
+                (
+                    self.context_list,
+                    torch.from_numpy(context.reshape(1, -1)).to(
+                        device="cuda", dtype=torch.float32
+                    ),
+                )
+            )
+            self.reward = torch.cat(
+                (
+                    self.reward,
+                    torch.tensor([reward], device="cuda", dtype=torch.float32),
+                )
+            )
+        if self.len % self.delay != 0:
+            return 0
+        reward = self.reward + torch.normal(
+            0, self.nu, size=(1, self.len), device="cuda"
+        ).view(-1)
+        for _ in range(100):
+            self.func.zero_grad()
+            optimizer.zero_grad()
+            pred = self.func(self.context_list).view(-1)
+            loss = self.loss_func(pred, reward)
+            loss.backward()
+            optimizer.step()
+        return 0

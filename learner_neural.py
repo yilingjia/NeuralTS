@@ -83,6 +83,8 @@ class NeuralTS:
                 tot_loss += loss.item()
                 cnt += 1
                 if cnt >= 1000:
+                    print("1000 iterations")
                     return tot_loss / 1000
             if batch_loss / length <= 1e-3:
+                print(cnt)
                 return batch_loss / length
